@@ -1,0 +1,193 @@
+--- multiotp.server.php (v4.0.2 / ldap-admin-acces v1.2)
++++ multiotp.server.php (v4.0.3 peer-urls fix)
+@@ -1849,19 +1849,31 @@
+       $own_cfg = MultiotpHaNormalizeSlaveUrl(nullable_trim(isset($ha_config['own_url']) ? $ha_config['own_url'] : '')); // v4.0
+       $cur  = MultiotpHaSlaveUrlList($ha_config);
+       $ha_changed = false;
++      // v4.0.3: identity of SELF and of the already known peers by canonical
++      // host:port key - a variant form (https/short path) of SELF or of an
++      // already listed peer is never merged again (no self listing, no
++      // duplication of the peer list at every sync/save cycle).
++      $own_keys = array_unique(array_filter(array(MultiotpHaUrlKey($own),
++                                                  MultiotpHaUrlKey($own_cfg))));
+       foreach ($payload_array['peers'] as $one_peer) {
+         $one_peer = MultiotpHaNormalizeSlaveUrl((string) $one_peer);
+         if (('' == $one_peer) || !preg_match('#^https?://#i', $one_peer)
+-            || MultiotpHaIsLoopbackUrl($one_peer)
+-            || in_array($one_peer, $cur)
+-            || (('' != $own) && (0 === strcasecmp($one_peer, $own)))
+-            || (('' != $own_cfg) && (0 === strcasecmp($one_peer, $own_cfg)))   // v4.0: never add SELF
+-            || (count($cur) >= 16)) {
++            || MultiotpHaIsLoopbackUrl($one_peer)) {
+           continue;
+         }
+-        $cur[] = $one_peer;
+-        $applied['peers_added']++;
+-        $ha_changed = true;
++        $one_key = MultiotpHaUrlKey($one_peer);
++        if (('' == $one_key) || in_array($one_key, $own_keys)) {   // v4.0.3: never add SELF (any variant form)
++          continue;
++        }
++        $ha_before = count($cur);
++        $cur = MultiotpHaDedupeUrls(array_merge($cur, array($one_peer)));
++        if ((count($cur) > $ha_before) && (count($cur) <= 16)) {
++          $applied['peers_added']++;
++          $ha_changed = true;
++        } elseif (count($cur) > 16) {
++          $cur = array_slice($cur, 0, 16);   // v3.1 cap preserved
++          break;
++        }
+       }
+       if ($ha_changed) {
+         $ha_config['slave_urls'] = implode(',', $cur);
+@@ -2033,13 +2045,17 @@
+   MultiotpHaSaveConfig($multiotp, $config);
+   $ha_own_cfg  = MultiotpHaNormalizeSlaveUrl(nullable_trim(isset($config['own_url']) ? $config['own_url'] : '')); // v4.0
+   $ha_own_web  = MultiotpHaNormalizeSlaveUrl(MultiotpHaOwnConsoleUrl());   // v4.0
++  $ha_own_keys = array_unique(array_filter(array(MultiotpHaUrlKey($ha_own_cfg),
++                                                 MultiotpHaUrlKey($ha_own_web)))); // v4.0.3
+   $agg = array('users' => 0, 'tokens' => 0, 'kept' => 0, 'updated' => 0, 'deleted' => 0,
+                'tombstones' => 0, 'peers_added' => 0, 'skipped' => 0);
+   $peers_result = array();
+   $any_ok = false;
+   foreach ($urls as $one_url) {
++    $ha_one_key = MultiotpHaUrlKey($one_url);   // v4.0.3
+     if ((('' != $ha_own_cfg) && (0 === strcasecmp($one_url, $ha_own_cfg)))   // v4.0: never pull from SELF
+-        || (('' != $ha_own_web) && (0 === strcasecmp($one_url, $ha_own_web)))) {
++        || (('' != $ha_own_web) && (0 === strcasecmp($one_url, $ha_own_web)))
++        || (('' != $ha_one_key) && in_array($ha_one_key, $ha_own_keys))) {   // v4.0.3: any variant form of SELF
+       continue;
+     }
+     $fetched = MultiotpHaFetchPeerPayload($multiotp, $config, $one_url);
+@@ -2337,7 +2353,12 @@
+     $config['interval_minutes'] = min(1440, $interval);
+   }
+   if (isset($options_array[4])) {
+-    $config['slave_urls'] = nullable_trim($options_array[4]); // v3: push targets
++    // v4.0.3: the Save button REPLACES the whole peer list (never appends).
++    // The submitted value is normalized and de-duplicated by canonical
++    // host:port key before storage, so re-saving the field (or saving a
++    // field that still shows old duplicated entries) always cleans it up.
++    $config['slave_urls'] = implode(',', MultiotpHaDedupeUrls(
++        preg_split('#[\s,;]+#', nullable_trim($options_array[4]))));
+   }
+   if (isset($options_array[5])) {
+     $flag = mb_strtolower(nullable_trim($options_array[5]));  // v3: instant push on/off
+@@ -2508,6 +2529,56 @@
+   return $url;
+ }
+ 
++/**
++ * @brief   v4.0.3: canonical identity key of a peer console URL (lowercase
++ *          host + effective port, implicit 80/443 when absent). Two URLs
++ *          sharing the same key designate the SAME console whatever the
++ *          scheme (http vs phantom https announce) or the written path
++ *          (with/without /multiotp.server.php). Comparing raw strings let a
++ *          variant of an already known peer be appended again at every
++ *          configuration save, duplicating the "Peer console URLs" field.
++ * @return  string "host:port", or '' when the URL is not a usable http(s) URL.
++ */
++function MultiotpHaUrlKey($url)
++{
++  $parts = parse_url(nullable_trim($url));
++  if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])
++      || !in_array(mb_strtolower((string) $parts['scheme']), array('http', 'https'))) {
++    return '';
++  }
++  $scheme = mb_strtolower((string) $parts['scheme']);
++  $port   = isset($parts['port']) ? intval($parts['port'])
++          : (('https' == $scheme) ? 443 : 80);
++  return mb_strtolower((string) $parts['host']).':'.$port;
++}
++
++/**
++ * @brief   v4.0.3: keep ONE entry per peer console (canonical host:port key).
++ *          The first written form wins, the original order is preserved.
++ * @return  array of normalized, de-duplicated peer console URLs.
++ */
++function MultiotpHaDedupeUrls($urls)
++{
++  $out  = array();
++  $keys = array();
++  foreach ((array) $urls as $one_url) {
++    $one_url = MultiotpHaNormalizeSlaveUrl((string) $one_url);
++    if ('' == $one_url) {
++      continue;
++    }
++    $one_key = MultiotpHaUrlKey($one_url);
++    if ('' == $one_key) {
++      continue;
++    }
++    if (in_array($one_key, $keys)) {   // same host:port: variant of an already listed peer
++      continue;
++    }
++    $keys[] = $one_key;
++    $out[]  = $one_url;
++  }
++  return $out;
++}
++
+ function MultiotpHaSlaveUrlList($config)
+ {
+   $raw0 = isset($config['slave_urls']) ? (string) $config['slave_urls'] : '';
+@@ -2536,7 +2607,7 @@
+       $urls[] = $one_url;
+     }
+   }
+-  return array_values(array_unique($urls));
++  return MultiotpHaDedupeUrls($urls);   // v4.0.3: one entry per console (host:port), no variant duplicates
+ }
+ 
+ /**
+@@ -2667,17 +2738,21 @@
+     }
+   }
+   $changed = false;
+-  if (!in_array($slave_url, $current)) {
+-    if (count($current) >= 16) {
++  // v4.0.3: a peer console is identified by its canonical host:port key.
++  // A variant announce (http/https, short/long path) of an ALREADY KNOWN
++  // peer must be reported as "already known" instead of being appended
++  // again (this was duplicating the peer list at every console save).
++  $merged = MultiotpHaDedupeUrls(array_merge($current, array($slave_url)));
++  if (count($merged) != count($current)) {
++    if (count($merged) > 16) {
+       return array('ok' => false, 'error' => 'too_many_slaves');
+     }
+-    $current[] = $slave_url;
+-    $config['slave_urls'] = implode(',', $current);
++    $config['slave_urls'] = implode(',', $merged);
+     MultiotpHaSaveConfig($multiotp, $config);
+     $changed = true;
+   }
+   MultiotpHaLog($multiotp, 'HA slave self-registration'.($changed ? '' : ' (already known)').': '.$slave_url);
+-  return array('ok' => true, 'registered' => $changed, 'slaves' => count($current));
++  return array('ok' => true, 'registered' => $changed, 'slaves' => count($merged));
+ }
+ 
+ /**
+@@ -2711,10 +2786,14 @@
+   $token2  = MultiotpHaMakeTokenStrong($secret, $ts, 'notify'); // v3.10
+   $ha_own_cfg = MultiotpHaNormalizeSlaveUrl(nullable_trim(isset($config['own_url']) ? $config['own_url'] : '')); // v4.0
+   $ha_own_web = MultiotpHaNormalizeSlaveUrl(MultiotpHaOwnConsoleUrl());   // v4.0
++  $ha_own_keys = array_unique(array_filter(array(MultiotpHaUrlKey($ha_own_cfg),
++                                                 MultiotpHaUrlKey($ha_own_web)))); // v4.0.3
+   $results = array();
+   foreach ($urls as $one_url) {
++    $ha_one_key = MultiotpHaUrlKey($one_url);   // v4.0.3
+     if ((('' != $ha_own_cfg) && (0 === strcasecmp($one_url, $ha_own_cfg)))   // v4.0: never notify SELF
+-        || (('' != $ha_own_web) && (0 === strcasecmp($one_url, $ha_own_web)))) {
++        || (('' != $ha_own_web) && (0 === strcasecmp($one_url, $ha_own_web)))
++        || (('' != $ha_one_key) && in_array($ha_one_key, $ha_own_keys))) {   // v4.0.3: any variant form of SELF
+       continue;
+     }
+     $sep = (false === mb_strpos($one_url, '?')) ? '?' : '&';
+@@ -4547,7 +4626,7 @@
+                     } else {
+                         ha_push = 'Data revision applied: ' + (ha_st.last_known_rev ? String(ha_st.last_known_rev).substring(0, 10) + '...' : 'unknown yet');
+                     }
+-                    document.getElementById('ha_status').innerHTML = '<b>HA extension: v4.0.2 (multi-master cluster, AD-like)</b><br />'
++                    document.getElementById('ha_status').innerHTML = '<b>HA extension: v4.0.3 (multi-master cluster, AD-like)</b><br />'
+                                                                       + 'Security: HA config encrypted (AES-256-CBC) - shared secret NEVER displayed nor sent - peer tokens HMAC-SHA256 (legacy md5 accepted) - admin passwords stored as salted hashes<br />' + ha_last + '<br />' + ha_task + '<br />' + ha_push + '<br />PHP for the task: ' + (ha_st.php_binary ? ha_st.php_binary : '?') + ' - local users: ' + ha_st.users_count + ((('master' == ha_st.role || 'cluster' == ha_st.role) && ha_st.push_ready === false) ? '<br /><b style="color:#c0392b;">Instant push NOT ready: ' + (ha_st.secret_set ? 'no slave console URL configured - configure each slave once (it registers itself) or fill the slave URLs below.' : 'set the shared HA secret below.') + '</b>' : '') + ((('master' == ha_st.role || 'cluster' == ha_st.role) && ha_st.push_ready === true && ha_st.pending_push === true) ? '<br /><b style="color:#b26a00;">Data changed but push NOT confirmed by every slave - automatic retry every minute. Check slave reachability (Send test push) and the log below.</b>' : '') + ((('master' == ha_st.role || 'cluster' == ha_st.role) && ha_st.slave_urls_loopback === true) ? '<br /><b style="color:#c0392b;">A slave URL points to 127.0.0.1/localhost - only valid if that slave console runs on THIS machine. Otherwise use the remote IP, e.g. http(s)://&lt;slave-LAN-IP&gt;:&lt;port&gt;/multiotp.server.php</b>' : '');
+                 } catch (e) { }
+             }
