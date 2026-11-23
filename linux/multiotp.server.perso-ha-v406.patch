@@ -1,0 +1,31 @@
+--- multiotp.server.php (v4.0.5 recreate-sync fix)
++++ multiotp.server.php (v4.0.6 ui-clean fix)
+@@ -1227,6 +1227,10 @@
+  ***  peer (old data replaced, tombstone cleared), even in the      ***
+  ***  same second as the deletion (console creations bump the       ***
+  ***  file mtime, see MultiotpHaCreationTouch).                     ***
++ ***  v4.0.6: UI-CLEAN - the "Instant push on data change (master)" ***
++ ***  settings row is HIDDEN on request (display:none); the         ***
++ ***  checkbox stays in the DOM so the saved setting keeps loading  ***
++ ***  and saving unchanged - the Instant Push behavior is intact.   ***
+  **********************************************************************
+  **********************************************************************/
+ define('MULTIOTP_HA_FILENAME',      'multiotp-ha-config.json');
+@@ -4821,7 +4825,7 @@
+                     } else {
+                         ha_push = 'Data revision applied: ' + (ha_st.last_known_rev ? String(ha_st.last_known_rev).substring(0, 10) + '...' : 'unknown yet');
+                     }
+-                    document.getElementById('ha_status').innerHTML = '<b>HA extension: v4.0.5 (multi-master cluster, AD-like, install-push + recreate-sync fixes)</b><br />'
++                    document.getElementById('ha_status').innerHTML = '<b>HA extension: v4.0.6 (multi-master cluster, AD-like, install-push + recreate-sync + ui-clean fixes)</b><br />'
+                                                                       + 'Security: HA config encrypted (AES-256-CBC) - shared secret NEVER displayed nor sent - peer tokens HMAC-SHA256 (legacy md5 accepted) - admin passwords stored as salted hashes<br />' + ha_last + '<br />' + ha_task + '<br />' + ha_push + '<br />PHP for the task: ' + (ha_st.php_binary ? ha_st.php_binary : '?') + ' - local users: ' + ha_st.users_count + ((('master' == ha_st.role || 'cluster' == ha_st.role) && ha_st.push_ready === false) ? '<br /><b style="color:#c0392b;">Instant push NOT ready: ' + (ha_st.secret_set ? 'no slave console URL configured - configure each slave once (it registers itself) or fill the slave URLs below.' : 'set the shared HA secret below.') + '</b>' : '') + ((('master' == ha_st.role || 'cluster' == ha_st.role) && ha_st.push_ready === true && ha_st.pending_push === true) ? '<br /><b style="color:#b26a00;">Data changed but push NOT confirmed by every slave - automatic retry every minute. Check slave reachability (Send test push) and the log below.</b>' : '') + ((('master' == ha_st.role || 'cluster' == ha_st.role) && ha_st.slave_urls_loopback === true) ? '<br /><b style="color:#c0392b;">A slave URL points to 127.0.0.1/localhost - only valid if that slave console runs on THIS machine. Otherwise use the remote IP, e.g. http(s)://&lt;slave-LAN-IP&gt;:&lt;port&gt;/multiotp.server.php</b>' : '');
+                 } catch (e) { }
+             }
+@@ -5680,7 +5684,7 @@
+                             <input type="number" name="ha_interval" id="ha_interval" min="1" max="1440" value="5" />
+                             <span class="form-hint">(the scheduled task runs every minute and pulls ONLY when this interval is elapsed - with the instant push below, this interval is just a safety net)</span>
+                         </div>
+-                        <div class="form-row">
++                        <div class="form-row" style="display:none;">   <!-- v4.0.6: row hidden on request; the checkbox stays in the DOM so the saved setting keeps loading and saving unchanged -->
+                             <label for="ha_push">Instant push on data change (master)</label>
+                             <input type="checkbox" name="ha_push" id="ha_push" value="1" checked="checked" />
+                             <span class="form-hint">(when the users/tokens data change on the master, the slaves are notified at once and pull immediately)</span>
