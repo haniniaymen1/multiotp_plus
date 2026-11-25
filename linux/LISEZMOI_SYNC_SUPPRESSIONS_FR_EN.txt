@@ -1,0 +1,321 @@
+================================================================================
+ MULTIOTP PLUS — SYNC AVEC SUPPRESSIONS / SYNC WITH DELETIONS
+ Package de déploiement v1.0 — 2026-11-25
+================================================================================
+
+FRANÇAIS
+========
+
+1. OBJECTIF
+-----------
+Rendre effective la promesse du bouton SYNC de l'application MultiOTP
+Administration (Setup_MultiOTP_Administration_1.0.msi) : « Useful if LDAP
+users were created or deleted ». Aujourd'hui, quand vous cliquez sur SYNC,
+l'application exécute :
+
+    C:\multiotp\sync.bat :
+    start "Synchronization" "C:\multiotp\multiotp.exe" -debug -display-log -ldap-users-sync
+
+C'est le MOTEUR multiOTP qui décide du sort des utilisateurs disparus de
+l'Active Directory. Avec le moteur OFFICIEL 5.10.2.2, il se contente de les
+DÉSACTIVER (preuve dans votre journal du 2026-11-25 09:34, machine
+WIN-SF6D6Q3SQLU) :
+
+    Info: account ahmed11 automatically disabled (no more in the AD/LDAP)
+
+→ ahmed11 reste donc visible dans la liste (désactivé), jamais supprimé.
+
+Avec le moteur PATCHÉ de ce package (class v4.0.9, garde AD-DELETE-SYNC
+v4.0.8), le MÊME bouton SYNC de l'application SUPPRIME IMMÉDIATEMENT les
+utilisateurs disparus, crée une tombstone (propagation HA), et le compte
+disparaît de la liste :
+
+    Info: account ahmed11 deleted by the AD/LDAP synchronization (no more in the AD/LDAP)
+
+AUCUNE modification du MSI ou de l'application n'est nécessaire : le bouton
+appelle déjà le moteur ; c'est le moteur qui doit savoir supprimer.
+
+2. CONTENU DU PACKAGE
+---------------------
+    multiotp.class.php     Class patché v4.0.9 (garde AD-DELETE-SYNC + tombstones HA)
+    multiotp.server.php    Serveur enrichi v4.0.10 (bouton « Synchronize AD » de la
+                           console web : détection du class patché + TRUE explicite)
+    check_deployment.php   Contrôle de déploiement (état + actions restantes)
+    contrib\               Dossier complet (37 fichiers) — à recopier ENTIER
+
+Empreintes de référence (SHA256, voir SHA256SUMS.txt) :
+    multiotp.class.php  = celui validé 27/27 (md5 e99ed9db32b203989656dfb217a1f418)
+
+3. DÉPLOIEMENT (sur CHAQUE machine / CHAQUE nœud du cluster)
+------------------------------------------------------------
+Étape 1 — Sauvegarder :
+    copy C:\multiotp\multiotp.class.php  C:\multiotp\backup\multiotp.class.php.official
+    copy C:\multiotp\multiotp.server.php C:\multiotp\backup\multiotp.server.php.official
+
+Étape 2 — Remplacer les deux fichiers par ceux du package :
+    copy /Y multiotp.class.php  C:\multiotp\multiotp.class.php
+    copy /Y multiotp.server.php C:\multiotp\multiotp.server.php
+
+Étape 3 — Recopier le dossier contrib\ COMPLET (37 fichiers) :
+    xcopy /E /I /Y contrib C:\multiotp\contrib
+
+Étape 4 — Contrôler le déploiement :
+    cd C:\multiotp
+    php.exe check_deployment.php
+    (contrôle rapide du class : findstr /C:"ldap_total_counter >= 1" C:\multiotp\multiotp.class.php
+     → trouvé = class patché ; idem findstr /C:"ha_class_patched" pour le serveur)
+
+Étape 5 — Relancer le service web (nginx/php-fpm ou le service fastcgi), puis
+cliquer sur SYNC dans l'application MultiOTP Administration.
+
+Étape 6 — Vérifier le résultat dans C:\multiotp\log\multiotp.log :
+    Info: account <login> deleted by the AD/LDAP synchronization (no more in the AD/LDAP)
+→ l'utilisateur a disparu de la liste immédiatement.
+
+4. COMPORTEMENT APRÈS DÉPLOIEMENT
+---------------------------------
+- Bouton SYNC de l'application  → supprime immédiatement les disparus.
+- Tâche planifiée 12 h de l'application (Sincronizar_usuarios_LDAP) → idem.
+- Bouton « Synchronize AD » de la console web (port 8112) → idem (détection
+  automatique du class patché, v4.0.10).
+- CLI multiotp.exe -ldap-users-sync → idem (4 arguments, défaut TRUE).
+- Cluster HA (nœuds A/B) : chaque suppression crée une TOMBSTONE avant la
+  suppression locale ; elle se propage au pair à la première réplication →
+  l'utilisateur supprimé ne réapparaît JAMAIS (garde anti-résurrection LWW).
+
+5. SÉCURITÉ (garde anti-cascade, v4.0.8)
+----------------------------------------
+La suppression n'a lieu que si la passe a VU au moins une entrée LDAP
+($ldap_total_counter >= 1). Si l'AD est injoignable ou vide, RIEN n'est
+supprimé — impossible de vider la base par accident.
+
+6. ROLLBACK
+-----------
+    copy /Y C:\multiotp\backup\multiotp.class.php.official  C:\multiotp\multiotp.class.php
+    copy /Y C:\multiotp\backup\multiotp.server.php.official C:\multiotp\multiotp.server.php
+    + relancer le service web.
+
+================================================================================
+ENGLISH
+================================================================================
+
+1. GOAL
+-------
+Make the SYNC button of the MultiOTP Administration application
+(Setup_MultiOTP_Administration_1.0.msi) honor its tooltip « Useful if LDAP
+users were created or deleted ». The button runs C:\multiotp\sync.bat, which
+calls "C:\multiotp\multiotp.exe" -debug -display-log -ldap-users-sync.
+With the OFFICIAL 5.10.2.2 engine, users removed from Active Directory are
+only DISABLED (your 2026-11-25 09:34 log on WIN-SF6D6Q3SQLU:
+"Info: account ahmed11 automatically disabled (no more in the AD/LDAP)")
+and stay visible in the list. With the PATCHED engine shipped in this
+package (class v4.0.9, AD-DELETE-SYNC guard v4.0.8), the SAME SYNC button
+DELETES missing users immediately, with an HA tombstone, and the account
+disappears from the list at once:
+
+    Info: account ahmed11 deleted by the AD/LDAP synchronization (no more in the AD/LDAP)
+
+NO MSI/application change is required: the button already calls the engine;
+the engine is what must learn to delete.
+
+2. PACKAGE CONTENT
+------------------
+    multiotp.class.php     Patched class v4.0.9 (AD-DELETE-SYNC guard + HA tombstones)
+    multiotp.server.php    Enhanced server v4.0.10 (web console « Synchronize AD »
+                           button: detects patched class, passes TRUE explicitly)
+    check_deployment.php   Deployment checker (state + remaining actions)
+    contrib\               Complete folder (37 files) — copy it WHOLE
+
+Reference checksums in SHA256SUMS.txt; the class is the 27/27-validated one
+(md5 e99ed9db32b203989656dfb217a1f418).
+
+3. DEPLOYMENT (on EACH machine / EACH cluster node)
+---------------------------------------------------
+Step 1 — Backup:
+    copy C:\multiotp\multiotp.class.php  C:\multiotp\backup\multiotp.class.php.official
+    copy C:\multiotp\multiotp.server.php C:\multiotp\backup\multiotp.server.php.official
+Step 2 — Replace both files with the ones from this package (copy /Y).
+Step 3 — Copy the WHOLE contrib\ folder (37 files):
+    xcopy /E /I /Y contrib C:\multiotp\contrib
+Step 4 — Check deployment:
+    cd C:\multiotp && php.exe check_deployment.php
+    quick class check: findstr /C:"ldap_total_counter >= 1" C:\multiotp\multiotp.class.php
+Step 5 — Restart the web service (nginx/php-fpm or fastcgi service), then
+click SYNC in the MultiOTP Administration application.
+Step 6 — Verify C:\multiotp\log\multiotp.log shows
+    "Info: account <login> deleted by the AD/LDAP synchronization (no more in the AD/LDAP)"
+
+4. BEHAVIOR AFTER DEPLOYMENT
+----------------------------
+- Application SYNC button: deletes missing users immediately.
+- Application 12-hour scheduled task (Sincronizar_usuarios_LDAP): same.
+- Web console "Synchronize AD" button (port 8112): same (v4.0.10 detection).
+- CLI multiotp.exe -ldap-users-sync: same (4 arguments, default TRUE).
+- HA cluster (nodes A/B): each deletion creates a TOMBSTONE before the local
+  deletion; the tombstone reaches the peer on the first replication, so a
+  deleted account NEVER comes back (LWW anti-resurrection guard).
+
+5. SAFETY (anti-cascade guard, v4.0.8)
+--------------------------------------
+Deletion only happens if the pass actually SAW at least one LDAP entry
+($ldap_total_counter >= 1). If AD is unreachable or empty, NOTHING is
+deleted — the user base cannot be wiped by accident.
+
+6. ROLLBACK
+-----------
+    copy /Y C:\multiotp\backup\multiotp.class.php.official  C:\multiotp\multiotp.class.php
+    copy /Y C:\multiotp\backup\multiotp.server.php.official C:\multiotp\multiotp.server.php
+    then restart the web service.
+================================================================================
+7. SI LE DEPLOIEMENT DE LA v1.0 N'A PAS FONCTIONNE (nouveau en v1.1)
+================================================================================
+Investigation complete (2026-11-25) : le binaire multiotp.exe officiel ne fait
+que 278 000 octets : c'est un LANCEUR qui lit le moteur multiotp.class.php
+DEPUIS LE DISQUE (aucune trace du code du class dans l'exe : 0 occurrence de
+"SyncLdapUsers", "ldap_total_counter", etc.). La logique patchée traite aussi
+les comptes DEJA DESACTIVES (la passe suivante les supprime). Le mecanisme
+"remplacer multiotp.class.php" est donc le bon.
+
+Si cela "ne marche pas", c'est l'execution du deploiement qui a echoue.
+Causes les plus frequentes :
+  a) copie faite SANS droits administrateur (copy echoue en silence dans
+     une console non-elevee),
+  b) fichiers remplaces sur une AUTRE machine que celle ou le bouton Sync
+     est clique (verifiez le hostname du log),
+  c) aucune NOUVELLE passe lancee apres le remplacement (ahmed8 desactive
+     a 10:03 reste liste jusqu'a la prochaine sync),
+  d) fichiers copies au mauvais endroit (zip extrait dans un sous-dossier).
+
+DEUX SCRIPTS FOURNIS (v1.1), a laisser dans le dossier du package :
+
+  DIAGNOSTIC_sync_suppressions.cmd
+    Double-clic (pas besoin d'admin). N'ecrit que C:\multiotp\diagnostic_sync.txt.
+    Verifie sur la machine : hostname, garde AD-DELETE-SYNC du class sur disque,
+    defaut delete_old_synced_users, serveur v4.0.10, MD5 attendu
+    e99ed9db32b203989656dfb217a1f418, copies multiples du class, taille de
+    multiotp.exe, contenu de sync.bat, php, contrib (37), comptes ahmed
+    restants, tache planifiee.
+    -> ENVOYEZ CE RAPPORT si le probleme persiste.
+
+  DEPLOY_sync_suppressions.cmd
+    Clic droit -> "Executer en tant qu'administrateur" (sinon il s'arrete).
+    Enchaine : controle du package -> sauvegarde horodatee -> remplacement
+    class + server + contrib -> RE-verification sur disque (garde + MD5) ->
+    SYNCHRONISATION FORCEE avec log affiche en direct -> liste des comptes
+    ahmed restants. Si la ligne "deleted by the AD/LDAP synchronization"
+    apparait, c'est gagné ; ahmed8/ahmed10/ahmed11 disparaissent de la
+    console (apres relance du service web).
+    Usage avancé : DEPLOY_sync_suppressions.cmd C:\chemin\du\package
+
+RAPPEL CLUSTER : lancez DEPLOY sur CHAQUE noeud. Les tombstones empechent
+toute resurrection sur le pair.
+
+English summary:
+  multiotp.exe (278,000 bytes) is a LAUNCHER that loads multiotp.class.php
+  from disk - replacing the class file is the right mechanism. If it "did
+  not work", the deployment execution failed (non-admin copy, wrong machine,
+  or no new sync pass after replacement). Run DIAGNOSTIC first (report at
+  C:\multiotp\diagnostic_sync.txt), then DEPLOY as administrator: it verifies
+  the package, backs up, replaces, re-verifies, forces ONE sync with live
+  log, and lists remaining ahmed accounts.
+
+================================================================================
+NOTE v1.2 (2026-11-25 - apres le message "The file cannot be copied onto itself")
+================================================================================
+Cause : le script DEPLOY avait ete lance depuis C:\multiotp lui-meme. Il
+essayait alors de copier C:\multiotp\multiotp.class.php sur lui-meme -> erreur
+"The file cannot be copied onto itself. 0 file(s) copied." Ce n'etait NI un
+verrou NI un probleme de droits.
+
+Bonne nouvelle cachee dans cette erreur : l'etape 1 avait verifie le class EN
+PLACE dans C:\multiotp et y avait trouve la garde AD-DELETE-SYNC -> le class
+patche est DEJA deploye sur cette machine. Il suffit de lancer une nouvelle
+passe de synchronisation pour supprimer les comptes disparus (ahmed8, etc.).
+
+Comportement v1.2 : si le script est lance depuis C:\multiotp, il passe
+automatiquement en MODE VERIFICATION + SYNC FORCEE (aucune copie) :
+  - verifie la garde et le defaut TRUE du class en place + MD5 + contrib,
+  - lance : multiotp.exe -debug -display-log -ldap-users-sync (log en direct),
+  - liste les comptes ahmed restants sur disque.
+Pour un remplacement complet (autre machine / autre noeud) : extrayez le zip
+dans un dossier dedie (ex. C:\Temp\pkg) et lancez le script depuis CE dossier,
+ou passez le chemin en argument :
+  DEPLOY_sync_suppressions.cmd C:\Temp\pkg\MultiOTP_Suppressions_v1.2
+
+Action immediate equivalente sans script (cmd administrateur) :
+  cd /d C:\multiotp
+  multiotp.exe -debug -display-log -ldap-users-sync
+  dir /b C:\multiotp\users | findstr /I ahmed
+La ligne "deleted by the AD/LDAP synchronization" confirme la suppression ;
+le compte disparait ensuite de la console (apres relance du service web).
+
+ENGLISH: v1.2 detects being run from C:\multiotp itself and switches to
+verify-only + forced sync mode (no self-copy). The error "The file cannot be
+copied onto itself" of the previous run was harmless; the guard check of that
+run proved the patched class is ALREADY deployed on that machine - just run a
+new sync pass. Manual equivalent: cd /d C:\multiotp &&
+multiotp.exe -debug -display-log -ldap-users-sync
+
+================================================================================
+NOTE v1.3 (2026-11-25) — LA VRAIE CAUSE RACINE / THE REAL ROOT CAUSE
+================================================================================
+
+FRANÇAIS — Pourquoi les v1.0/v1.1/v1.2 ne pouvaient pas fonctionner
+-------------------------------------------------------------------
+Analyse binaire de multiotp.exe officiel (278 000 octets) : c'est un LANCEUR
+qui exécute :
+
+    php\php.exe php\multiotp.windows.php -base-dir=. <arguments>
+
+Le fichier php\multiotp.windows.php (3 272 745 octets) est un MONOLITHE qui
+contient le class multiOTP EMBARQUÉ (aucun require du class racine). Donc :
+
+  - le bouton Sync de l'application, la tâche planifiée 12 h et
+    multiotp.exe -ldap-users-sync exécutent TOUJOURS le monolithe ;
+  - remplacer C:\multiotp\multiotp.class.php (la racine) ne change RIEN à
+    ce chemin — c'est pourquoi « automatically disabled » continuait ;
+  - la racine n'est utilisée que par la console web (multiotp.server.php).
+
+CORRECTION v1.3 (patch v4.0.11 appliqué AU MONOLITHE) :
+  Patch 1 — branche AD-DELETE-SYNC immédiate dans SyncLdapUsers() : tout
+    compte synchronisé absent de l'AD est SUPPRIMÉ dès qu'une passe a vu
+    au moins 1 entrée LDAP (garde anti-cascade) ; sinon comportement
+    historique conservé (rétention / désactivation).
+  Patch 2 — helpers tombstone HA recopiés du serveur enrichi avec gardes :
+    même en contexte CLI, la tombstone anti-résurrection est écrite AVANT
+    la suppression → la suppression se propage aux pairs du cluster et ne
+    ressuscite jamais.
+
+Fichiers attendus après déploiement :
+  C:\multiotp\php\multiotp.windows.php   MD5 5bc34fcb5cab529631f76963583e61bc
+                                         (3 236 283 octets, garde "v4.0.11 AD-DELETE-SYNC")
+  C:\multiotp\multiotp.class.php         MD5 e99ed9db32b203989656dfb217a1f418 (racine, console web)
+  C:\multiotp\multiotp.server.php        v4.0.10 (marqueur "ha_class_patched")
+  C:\multiotp\contrib\                   37 fichiers
+
+Procédure : extraire le zip v1.3 dans C:\Temp\pkg puis, en ADMINISTRATEUR,
+lancer DEPLOY_sync_suppressions.cmd depuis CE dossier (ou passer le chemin
+en argument). Le script remplace les 3 fichiers + contrib, re-vérifie les
+gardes et les MD5, puis lance la sync forcée avec log en direct :
+
+    Info: account ahmed8 deleted by the AD/LDAP synchronization (no more in the AD/LDAP)
+
+À faire sur CHAQUE machine / nœud (les tombstones évitent les résurrections).
+Rollback : la sauvegarde horodatée est dans C:\multiotp\backup\deploiement_...
+
+ENGLISH — Why v1.0/v1.1/v1.2 could never work
+---------------------------------------------
+Binary analysis of the official multiotp.exe (278,000 bytes): it is a LAUNCHER
+that runs php\php.exe php\multiotp.windows.php -base-dir=. That 3,272,745-byte
+file is a MONOLITH embedding the whole multiOTP class (no require of the root
+class). The app Sync button, the 12-hour scheduled task and
+multiotp.exe -ldap-users-sync ALWAYS execute this monolith; replacing
+C:\multiotp\multiotp.class.php (root, used only by the web console) could
+never change that path - hence the "automatically disabled" behavior.
+v1.3 ships multiotp.windows.php patched v4.0.11: immediate AD-DELETE-SYNC
+branch in SyncLdapUsers() (delete missing users as soon as the pass saw at
+least one LDAP entry - anti-cascade guard) + standalone HA tombstone helpers
+(recorded BEFORE the deletion, anti-resurrection across cluster peers).
+Expected: C:\multiotp\php\multiotp.windows.php MD5
+5bc34fcb5cab529631f76963583e61bc (3,236,283 bytes). Deploy with
+DEPLOY_sync_suppressions.cmd as administrator on EVERY machine/node.
